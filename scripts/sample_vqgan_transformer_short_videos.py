@@ -1,17 +1,14 @@
 # Copyright (c) Meta Platforms, Inc. All Rights Reserved
 
 import os
-import tqdm
 import time
 import torch
 import argparse
 import numpy as np
-import pytorch_lightning as pl
 from einops import repeat
 
-from tats import VideoData, Net2NetTransformer, load_transformer, load_vqgan
+from tats import VideoData, load_transformer
 from tats.utils import save_video_grid
-from tats.data import preprocess
 from tats.modules.gpt import sample_with_past
 from tats.utils import shift_dim
 
@@ -24,7 +21,6 @@ parser.add_argument('--run', type=int, default=0)
 parser.add_argument('--top_k', type=int, default=2048)
 parser.add_argument('--top_p', type=float, default=0.92)
 parser.add_argument('--n_sample', type=int, default=2048)
-parser.add_argument('--dataset', type=str, default='ucf101', choices=['ucf101', 'sky', 'taichi'])
 parser.add_argument('--class_cond', action='store_true')
 parser.add_argument('--save_videos', action='store_true')
 parser.add_argument('--compute_fvd', action='store_true')

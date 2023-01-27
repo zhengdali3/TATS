@@ -6,6 +6,8 @@ import math
 import random
 import pickle
 import warnings
+import numpy as np
+from sklearn.model_selection import train_test_split
 
 import glob
 import h5py
@@ -30,7 +32,7 @@ class VideoDataset(data.Dataset):
     Returns BCTHW videos in the range [-0.5, 0.5] """
     exts = ['avi', 'mp4', 'webm']
 
-    def __init__(self, data_folder, sequence_length, train=True, resolution=64, sample_every_n_frames=1):
+    def __init__(self, data_folder, sequence_length, dataset, train=True, resolution=64, sample_every_n_frames=1):
         """
         Args:
             data_folder: path to the folder with videos. The folder
@@ -44,17 +46,27 @@ class VideoDataset(data.Dataset):
         self.resolution = resolution
         self.sample_every_n_frames = sample_every_n_frames
 
-        folder = osp.join(data_folder, 'train' if train else 'test')
-        files = sum([glob.glob(osp.join(folder, '**', f'*.{ext}'), recursive=True)
-                     for ext in self.exts], [])
+        if dataset == 'ucf101':
+            files = sum([glob.glob(osp.join(data_folder, '**', f'*.{ext}'), recursive=True) for ext in self.exts], [])
+            train_data, test_data = train_test_split(files, test_size=0.1, random_state=42)
+            files = train_data if train else test_data
+            self.classes = list(set(sum([f[0:-12] for f in files], [])))
 
-        # hacky way to compute # of classes (count # of unique parent directories)
-        self.classes = list(set([get_parent_dir(f) for f in files]))
+        elif dataset == 'taichi':
+            folder = osp.join(data_folder, 'train' if train else 'test')
+            files = sum([glob.glob(osp.join(folder, '**', f'*.{ext}'), recursive=True)
+                     for ext in self.exts], [])
+            # hacky way to compute # of classes (count # of unique parent directories)
+            self.classes = list(set([get_parent_dir(f) for f in files]))
+
         self.classes.sort()
         self.class_to_label = {c: i for i, c in enumerate(self.classes)}
 
         warnings.filterwarnings('ignore')
-        cache_file = osp.join(folder, f"metadata_{sequence_length}.pkl")
+        if train:
+            cache_file = osp.join(data_folder, f"metadata_{sequence_length}_train.pkl")
+        else:
+            cache_file = osp.join(data_folder, f"metadata_{sequence_length}_test.pkl")
         if not osp.exists(cache_file):
             clips = VideoClips(files, sequence_length, num_workers=32)
             pickle.dump(clips.metadata, open(cache_file, 'wb'))
@@ -219,10 +231,10 @@ class VideoData(pl.LightningDataModule):
     def _dataset(self, train):
         # check if it's coinrun dataset (path contains coinrun and it's a directory)
         if osp.isdir(self.args.data_path) and 'coinrun' in self.args.data_path.lower():
-            if hasattr(self.args, 'coinrun_v2_dataloader') and self.args.coinrun_v2_dataloader:
-                Dataset = CoinRunDatasetV2
-            else:
-                Dataset = CoinRunDataset
+            # if hasattr(self.args, 'coinrun_v2_dataloader') and self.args.coinrun_v2_dataloader:
+            #     Dataset = CoinRunDatasetV2
+            # else:
+            Dataset = CoinRunDataset
             if hasattr(self.args, 'smap_cond') and self.args.smap_cond:
                 dataset = Dataset(data_folder=self.args.data_path, args=self.args, train=train, get_seg_map=True)
             elif hasattr(self.args, 'text_cond') and self.args.text_cond:
@@ -242,7 +254,7 @@ class VideoData(pl.LightningDataModule):
                 dataset = Dataset(self.args.data_path, self.args.sequence_length,
                                   train=train, resolution=self.args.resolution, spatial_length=self.args.spatial_length,
                                   sample_every_n_frames=self.args.sample_every_n_frames)
-            elif hasattr(self.args, 'image_folder') and self.args.image_folder:
+            elif self.args.dataset == 'sky' or ((self.args, 'image_folder') and self.args.image_folder):
                 Dataset = FrameDataset
                 dataset = Dataset(self.args.data_path, self.args.sequence_length,
                                   resolution=self.args.resolution, sample_every_n_frames=self.args.sample_every_n_frames)
@@ -263,11 +275,11 @@ class VideoData(pl.LightningDataModule):
                                   text_len=self.args.text_seq_len, truncate_captions=self.args.truncate_captions)
             elif hasattr(self.args, 'sample_every_n_frames') and self.args.sample_every_n_frames>1:
                 Dataset = VideoDataset if osp.isdir(self.args.data_path) else HDF5Dataset
-                dataset = Dataset(self.args.data_path, self.args.sequence_length,
+                dataset = Dataset(self.args.data_path, self.args.sequence_length, self.args.dataset,
                                   train=train, resolution=self.args.resolution, sample_every_n_frames=self.args.sample_every_n_frames)
             else:
                 Dataset = VideoDataset if osp.isdir(self.args.data_path) else HDF5Dataset
-                dataset = Dataset(self.args.data_path, self.args.sequence_length,
+                dataset = Dataset(self.args.data_path, self.args.sequence_length, self.args.dataset,
                                   train=train, resolution=self.args.resolution)
         return dataset
 
@@ -278,10 +290,10 @@ class VideoData(pl.LightningDataModule):
                 dataset, num_replicas=dist.get_world_size(), rank=dist.get_rank()
             )
         else:
-            if hasattr(self.args, 'balanced_sampler') and self.args.balanced_sampler and train:
-                sampler = BalancedRandomSampler(dataset.classes_for_sampling)
-            else:
-                sampler = None
+            # if hasattr(self.args, 'balanced_sampler') and self.args.balanced_sampler and train:
+            #     sampler = BalancedRandomSampler(dataset.classes_for_sampling)
+            # else:
+            sampler = None
         dataloader = data.DataLoader(
             dataset,
             batch_size=self.args.batch_size,
@@ -306,6 +318,7 @@ class VideoData(pl.LightningDataModule):
     def add_data_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         parser.add_argument('--data_path', type=str, default='/datasets01/Kinetics400_Frames/videos')
+        parser.add_argument('--dataset', type=str, default='ucf101', choices=['ucf101', 'taichi'])
         parser.add_argument('--sequence_length', type=int, default=16)
         parser.add_argument('--resolution', type=int, default=64)
         parser.add_argument('--batch_size', type=int, default=32)
@@ -397,11 +410,11 @@ class HDF5Dataset_text(data.Dataset):
         self.text_file = os.path.join(os.path.dirname(data_file), '%s_text_description.txt' % self.prefix)
         self._text_annos = [line.rstrip() for line in open(self.text_file)]
 
-        if text_emb_model == 'bert':
-            print('using bert pretrain model...')
-            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        else:
-            self.tokenizer = tokenizer
+        # if text_emb_model == 'bert':
+        #     print('using bert pretrain model...')
+        #     self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        # else:
+        self.tokenizer = tokenizer
 
     @property
     def n_classes(self):
