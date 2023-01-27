@@ -7,6 +7,7 @@ import random
 import pickle
 import warnings
 import numpy as np
+import tqdm
 from sklearn.model_selection import train_test_split
 
 import glob
@@ -45,22 +46,25 @@ class VideoDataset(data.Dataset):
         self.sequence_length = sequence_length
         self.resolution = resolution
         self.sample_every_n_frames = sample_every_n_frames
+        self.dataset = dataset
+        self.classes = []
 
-        if dataset == 'ucf101':
+        if self.dataset == 'ucf101':
             files = sum([glob.glob(osp.join(data_folder, '**', f'*.{ext}'), recursive=True) for ext in self.exts], [])
             train_data, test_data = train_test_split(files, test_size=0.1, random_state=42)
             files = train_data if train else test_data
-            self.classes = list(set(sum([f[0:-12] for f in files], [])))
+            for f in files:
+                self.classes.append(f[0:-12])
 
-        elif dataset == 'taichi':
+        elif self.dataset == 'taichi':
             folder = osp.join(data_folder, 'train' if train else 'test')
             files = sum([glob.glob(osp.join(folder, '**', f'*.{ext}'), recursive=True)
                      for ext in self.exts], [])
             # hacky way to compute # of classes (count # of unique parent directories)
-            self.classes = list(set([get_parent_dir(f) for f in files]))
+            self.classes = files
 
         self.classes.sort()
-        self.class_to_label = {c: i for i, c in enumerate(self.classes)}
+        self.class_to_label = list(self.classes[i] for i in range(len(self.classes)))
 
         warnings.filterwarnings('ignore')
         if train:
@@ -77,6 +81,8 @@ class VideoDataset(data.Dataset):
 
         # self._clips = clips.subset(np.arange(24))
         self._clips = clips
+        
+        # print("classes length", self.classes, "class_to_label length:", len(self.class_to_label), "video_paths length:", len(self._clips.video_paths), "file length:", len(files), sep = " ", end = "\n\n")
 
     @property
     def n_classes(self):
@@ -94,9 +100,12 @@ class VideoDataset(data.Dataset):
                 idx = (idx + 1) % self._clips.num_clips()
                 continue
             break
-
-        class_name = get_parent_dir(self._clips.video_paths[idx])
-        label = self.class_to_label[class_name]
+        
+        # print("class_to_label length:", len(self.class_to_label), "video_paths length:", len(self._clips.video_paths), sep = " ")
+        assert len(self.class_to_label) == len(self._clips.video_paths)
+        assert idx < len(self._clips.video_paths)
+        
+        label = self.class_to_label[idx]
         return dict(**preprocess(video, resolution, sample_every_n_frames=self.sample_every_n_frames), label=label)
 
 
@@ -318,7 +327,7 @@ class VideoData(pl.LightningDataModule):
     def add_data_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
         parser.add_argument('--data_path', type=str, default='/datasets01/Kinetics400_Frames/videos')
-        parser.add_argument('--dataset', type=str, default='ucf101', choices=['ucf101', 'taichi'])
+        parser.add_argument('--dataset', type=str, default='ucf101', choices=['ucf101', 'sky', 'taichi'])
         parser.add_argument('--sequence_length', type=int, default=16)
         parser.add_argument('--resolution', type=int, default=64)
         parser.add_argument('--batch_size', type=int, default=32)
@@ -565,18 +574,16 @@ class FrameDataset(data.Dataset):
     def load_video_frames(self, dataroot):
         data_all = []
         frame_list = os.walk(dataroot)
-        for _, meta in enumerate(frame_list):
+        for _, meta in tqbm(enumerate(frame_list)):
             root = meta[0]
             try:
                 frames = sorted(meta[2], key=lambda item: int(item.split('.')[0].split('_')[-1]))
+                frames = [os.path.join(root, item) for item in frames if is_image_file(item)]
+                if len(frames) > max(0, self.sequence_length * self.sample_every_n_frames):
+                    data_all.append(frames)
             except:
-                print(meta[0], meta[2])
-            frames = [
-                os.path.join(root, item) for item in frames
-                if is_image_file(item)
-            ]
-            if len(frames) > max(0, self.sequence_length * self.sample_every_n_frames):
-                data_all.append(frames)
+                # print(meta[0], meta[2])
+
         self.video_num = len(data_all)
         return data_all
 

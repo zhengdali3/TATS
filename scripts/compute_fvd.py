@@ -1,3 +1,6 @@
+import sys
+sys.path.insert(0, '/userhome/42/msd21003/TATS')
+
 import numpy as np
 import torch
 import argparse
@@ -8,10 +11,27 @@ from tats.fvd.fvd import get_fvd_logits, frechet_distance, load_fvd_model, polyn
 
 parser = argparse.ArgumentParser()
 parser = VideoData.add_data_specific_args(parser)
-parser.add_argument('--npfile', type=str, default='')
 args = parser.parse_args()
 
-all_data_np = np.load(args.npfile)
+# class Args:
+#     data_path = '/datasets01/Kinetics400_Frames/videos'
+#     dataset = 'taichi'
+#     sequence_length=16
+#     resolution=64
+#     batch_size=32
+#     num_workers=8
+#     image_channels=3
+#     smap_cond=0
+#     spatial_length=15
+#     sample_every_n_frames=1
+#     image_folder=False
+    
+# args=Args()
+
+npFile = "/userhome/42/msd21003/result/numpy_files/" + args.dataset + "/topp0.92_topk2048_run0_eval.npy"
+args.data_path = "/userhome/42/msd21003/" + args.dataset
+
+all_data_np = np.load(npFile)
 device = torch.device('cuda')
 i3d = load_fvd_model(device)
 data = VideoData(args)
