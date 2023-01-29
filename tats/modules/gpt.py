@@ -105,12 +105,18 @@ class CausalSelfAttention(nn.Module):
 
     def forward(self, x, layer_past=None):
         B, T, C = x.size()
+        
+        print(f"B:{B}, T:{T}, C:{C}")
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
         k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-
+        
+        print(f"k:{k.size()}")
+        
+        breakpoint()
+        
         present = torch.stack((k, v))
         if layer_past is not None:
             past_key, past_value = layer_past

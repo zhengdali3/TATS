@@ -7,7 +7,7 @@ import random
 import pickle
 import warnings
 import numpy as np
-import tqdm
+from tqdm import tqdm
 from sklearn.model_selection import train_test_split
 
 import glob
@@ -33,7 +33,7 @@ class VideoDataset(data.Dataset):
     Returns BCTHW videos in the range [-0.5, 0.5] """
     exts = ['avi', 'mp4', 'webm']
 
-    def __init__(self, data_folder, sequence_length, dataset, train=True, resolution=64, sample_every_n_frames=1):
+    def __init__(self, data_folder, sequence_length, dataset, istrain=True, resolution=64, sample_every_n_frames=1):
         """
         Args:
             data_folder: path to the folder with videos. The folder
@@ -42,7 +42,6 @@ class VideoDataset(data.Dataset):
             sequence_length: length of extracted video sequences
         """
         super().__init__()
-        self.train = train
         self.sequence_length = sequence_length
         self.resolution = resolution
         self.sample_every_n_frames = sample_every_n_frames
@@ -52,12 +51,12 @@ class VideoDataset(data.Dataset):
         if self.dataset == 'ucf101':
             files = sum([glob.glob(osp.join(data_folder, '**', f'*.{ext}'), recursive=True) for ext in self.exts], [])
             train_data, test_data = train_test_split(files, test_size=0.1, random_state=42)
-            files = train_data if train else test_data
+            files = train_data if istrain else test_data
             for f in files:
                 self.classes.append(f[0:-12])
 
         elif self.dataset == 'taichi':
-            folder = osp.join(data_folder, 'train' if train else 'test')
+            folder = osp.join(data_folder, 'train' if istrain else 'test')
             files = sum([glob.glob(osp.join(folder, '**', f'*.{ext}'), recursive=True)
                      for ext in self.exts], [])
             # hacky way to compute # of classes (count # of unique parent directories)
@@ -241,7 +240,6 @@ class VideoData(pl.LightningDataModule):
         # check if it's coinrun dataset (path contains coinrun and it's a directory)
         if osp.isdir(self.args.data_path) and 'coinrun' in self.args.data_path.lower():
             # if hasattr(self.args, 'coinrun_v2_dataloader') and self.args.coinrun_v2_dataloader:
-            #     Dataset = CoinRunDatasetV2
             # else:
             Dataset = CoinRunDataset
             if hasattr(self.args, 'smap_cond') and self.args.smap_cond:
@@ -285,11 +283,14 @@ class VideoData(pl.LightningDataModule):
             elif hasattr(self.args, 'sample_every_n_frames') and self.args.sample_every_n_frames>1:
                 Dataset = VideoDataset if osp.isdir(self.args.data_path) else HDF5Dataset
                 dataset = Dataset(self.args.data_path, self.args.sequence_length, self.args.dataset,
-                                  train=train, resolution=self.args.resolution, sample_every_n_frames=self.args.sample_every_n_frames)
+                                  istrain=train, resolution=self.args.resolution, sample_every_n_frames=self.args.sample_every_n_frames)
             else:
                 Dataset = VideoDataset if osp.isdir(self.args.data_path) else HDF5Dataset
+                
+                print(f"data_path:{type(self.args.data_path)},sequence_len:{type(self.args.sequence_length)},dataset:{type(self.args.dataset)},train:{type(train)},dataset:{type(Dataset)}")
+                      
                 dataset = Dataset(self.args.data_path, self.args.sequence_length, self.args.dataset,
-                                  train=train, resolution=self.args.resolution)
+                                  istrain=train, resolution=self.args.resolution)
         return dataset
 
     def _dataloader(self, train):
@@ -574,16 +575,16 @@ class FrameDataset(data.Dataset):
     def load_video_frames(self, dataroot):
         data_all = []
         frame_list = os.walk(dataroot)
-        for _, meta in tqbm(enumerate(frame_list)):
+        for _, meta in tqdm(enumerate(frame_list)):
             root = meta[0]
             try:
                 frames = sorted(meta[2], key=lambda item: int(item.split('.')[0].split('_')[-1]))
                 frames = [os.path.join(root, item) for item in frames if is_image_file(item)]
+                
                 if len(frames) > max(0, self.sequence_length * self.sample_every_n_frames):
                     data_all.append(frames)
             except:
-                # print(meta[0], meta[2])
-
+                print(meta[0])
         self.video_num = len(data_all)
         return data_all
 

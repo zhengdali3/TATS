@@ -123,6 +123,8 @@ class Net2NetTransformer(pl.LightningModule):
         # differently because we are conditioning)
         target = z_indices
         # make the prediction
+        print(f"a/z_indice:{a_indices.size()}, c_indices:{c_indices.size()}, cz_indices:{cz_indices.size()}, gpt input:{cz_indices[:, :-1].size()}")
+        
         logits, _ = self.transformer(cz_indices[:, :-1], cbox=cbox)
         # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
         logits = logits[:, c_indices.shape[1]-1:]
