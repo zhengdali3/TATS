@@ -66,7 +66,7 @@ class VideoDataset(data.Dataset):
         self.class_to_label = list(self.classes[i] for i in range(len(self.classes)))
 
         warnings.filterwarnings('ignore')
-        if train:
+        if istrain:
             cache_file = osp.join(data_folder, f"metadata_{sequence_length}_train.pkl")
         else:
             cache_file = osp.join(data_folder, f"metadata_{sequence_length}_test.pkl")
