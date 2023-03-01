@@ -327,7 +327,7 @@ class VideoData(pl.LightningDataModule):
     @staticmethod
     def add_data_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
-        parser.add_argument('--data_path', type=str, default='/datasets01/Kinetics400_Frames/videos')
+        parser.add_argument('--data_path', type=str, default='/home/ubuntu/Downloads/ucf101')
         parser.add_argument('--dataset', type=str, default='ucf101', choices=['ucf101', 'sky', 'taichi'])
         parser.add_argument('--sequence_length', type=int, default=16)
         parser.add_argument('--resolution', type=int, default=64)

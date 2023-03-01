@@ -123,8 +123,8 @@ class Net2NetTransformer(pl.LightningModule):
         # differently because we are conditioning)
         target = z_indices
         # make the prediction
-        print(f"a/z_indice:{a_indices.size()}, c_indices:{c_indices.size()}, cz_indices:{cz_indices.size()}, gpt input:{cz_indices[:, :-1].size()}")
-        
+        # print(f"a/z_indice:{a_indices.size()}, c_indices:{c_indices.size()}, cz_indices:{cz_indices.size()}, gpt input:{cz_indices[:, :-1].size()}")
+
         logits, _ = self.transformer(cz_indices[:, :-1], cbox=cbox)
         # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
         logits = logits[:, c_indices.shape[1]-1:]
@@ -202,7 +202,9 @@ class Net2NetTransformer(pl.LightningModule):
             if self.sample_every_n_latent_frames > 0:
                 x = x[:, :, ::self.sample_every_n_latent_frames]
                 targets = targets[:, ::self.sample_every_n_latent_frames]
+            print(f"before shift_dim x:{x.size()}, targets:{targets.size()}")
             x = shift_dim(x, 1, -1)
+            print(f"after shift_dim x:{x.size()}, targets:{targets.size()}")
             targets = targets.reshape(targets.shape[0], -1)
         return x, targets
 

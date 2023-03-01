@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. All Rights Reserved
 import sys
-sys.path.insert(0, '/userhome/42/msd21003/TATS')
+sys.path.insert(0, '/home/ubuntu/git/TATS')
 
 import os
 import argparse
