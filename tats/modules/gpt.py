@@ -113,7 +113,7 @@ class CausalSelfAttention(nn.Module):
         v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         
 
-#         present = torch.stack((k, v))
+        present = torch.stack((k, v))
 #         if layer_past is not None:
 #             past_key, past_value = layer_past
 #             k = torch.cat((past_key, k), dim=-2)
@@ -128,8 +128,9 @@ class CausalSelfAttention(nn.Module):
 
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
-        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
-        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+
+        # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = att.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
         # output projection
         y = self.resid_drop(self.proj(y))
