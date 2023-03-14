@@ -50,13 +50,20 @@ def FocusedAttention(Q, K, V):
                     for h in range(H):
                         for w in range(W):
                             for enc in range(encodings_dim):
+                                # q shape is (HS,)
                                 q = Q_reshaped[b][nh][t][h][w][enc][:]
+                                
+                                # k and v shape is (T, H, W, HS)
                                 k = K_reshaped[b][nh][:][:][:][enc][:]
                                 v = V_reshaped[b][nh][:][:][:][enc][:]
+                                
+                                # boardcast for multiply
                                 q_reshaped = q.reshape((1, 1, 1, HS))
                                 qk = k * q_reshaped
                                 qk = qk.reshape(-1, HS)
+                                # qk shape should be (T*H*W, HS)
                                 qk = cupy.sum(qk, axis=1)
+                                
 
                                 # score shape is (T*H*W)
                                 score = softmax(qk / math.sqrt(HS))
@@ -69,10 +76,10 @@ def FocusedAttention(Q, K, V):
                                 # v shape is (T*H*W, HS)
                                 v = v.reshape(-1, HS)
                                 v = v * score
-
                                 a = cupy.sum(v, axis=0)
-
                                 A_reshaped[b][nh][t][h][w][enc][:] = a
+    A = A_reshaped.reshape(B,NH,T,HS)
+    return A
 
 getGaussian(4,4,4,[100,100],1,1,1)
 
