@@ -4,7 +4,6 @@ import math
 import cupy
 import numpy as np
 import cupy as cp
-import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
 from scipy.special import softmax
 
@@ -81,23 +80,23 @@ def FocusedAttention(Q, K, V):
     A = A_reshaped.reshape(B,NH,T,HS)
     return A
 
-getGaussian(4,4,4,[100,100],1,1,1)
+# getGaussian(4,4,4,[100,100],1,1,1)
 
-import cupy as cp
+# import cupy as cp
 
-# create an example input tensor with shape (B, nh, hs, encodings_dim, t, h, w)
-input_tensor = cp.random.randn(2, 3, 4, 5, 6, 7, 8)
+# # create an example input tensor with shape (B, nh, hs, encodings_dim, t, h, w)
+# input_tensor = cp.random.randn(2, 3, 4, 5, 6, 7, 8)
 
-# create an example matrix to multiply with, with shape (t, h, w)
-mul_matrix = cp.random.randn(5, 6, 7)
+# # create an example matrix to multiply with, with shape (t, h, w)
+# mul_matrix = cp.random.randn(5, 6, 7)
 
-# Reshape the input tensor and multiplication matrix to enable broadcasting
-input_tensor_reshaped = cp.reshape(input_tensor, (input_tensor.shape[0]*input_tensor.shape[1]*input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4], input_tensor.shape[5], input_tensor.shape[6]))
-mul_matrix_reshaped = cp.broadcast_to(cp.expand_dims(cp.expand_dims(cp.expand_dims(mul_matrix, axis=0), axis=0), axis=0), (input_tensor[0]*input_tensor.shape[1]*input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4], input_tensor.shape[5], input_tensor.shape[6]))
+# # Reshape the input tensor and multiplication matrix to enable broadcasting
+# input_tensor_reshaped = cp.reshape(input_tensor, (input_tensor.shape[0]*input_tensor.shape[1]*input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4], input_tensor.shape[5], input_tensor.shape[6]))
+# mul_matrix_reshaped = cp.broadcast_to(cp.expand_dims(cp.expand_dims(cp.expand_dims(mul_matrix, axis=0), axis=0), axis=0), (input_tensor[0]*input_tensor.shape[1]*input_tensor.shape[2], input_tensor.shape[3], input_tensor.shape[4], input_tensor.shape[5], input_tensor.shape[6]))
 
-# perform the element-wise multiplication of the submatrices in one step
-output_tensor = cp.multiply(input_tensor_reshaped, mul_matrix_reshaped)
+# # perform the element-wise multiplication of the submatrices in one step
+# output_tensor = cp.multiply(input_tensor_reshaped, mul_matrix_reshaped)
 
-# print the first element of the modified input tensor for validation
-print("First element of the modified input tensor:")
-print(output_tensor[0, 0, 0, :, :, :, :])
+# # print the first element of the modified input tensor for validation
+# print("First element of the modified input tensor:")
+# print(output_tensor[0, 0, 0, :, :, :, :])
