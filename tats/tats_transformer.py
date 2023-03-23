@@ -202,9 +202,9 @@ class Net2NetTransformer(pl.LightningModule):
             if self.sample_every_n_latent_frames > 0:
                 x = x[:, :, ::self.sample_every_n_latent_frames]
                 targets = targets[:, ::self.sample_every_n_latent_frames]
-            print(f"before shift_dim x:{x.size()}, targets:{targets.size()}")
+            # print(f"before shift_dim x:{x.size()}, targets:{targets.size()}")
             x = shift_dim(x, 1, -1)
-            print(f"after shift_dim x:{x.size()}, targets:{targets.size()}")
+            # print(f"after shift_dim x:{x.size()}, targets:{targets.size()}")
             targets = targets.reshape(targets.shape[0], -1)
         return x, targets
 

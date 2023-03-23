@@ -12,6 +12,7 @@ import math
 import logging
 import cupy
 import numpy
+from tqdm import trange
 
 import torch
 import torch.nn as nn
@@ -21,27 +22,41 @@ from torch.utils.dlpack import from_dlpack
 from scipy.stats import multivariate_normal
 # from transformers import top_k_top_p_filtering
 
-def getGaussian(T, H, W, beta, x, y, z):
-    weight = cupy.ones((T, H, W))
-    d = numpy.diag([beta[0], beta[1], beta[1]])
-    rv = multivariate_normal([x , y, z], d)
-    for i in range(weight.shape[0]):
-        for j in range(weight.shape[1]):
-            for k in range(weight.shape[2]):
-                weight[i][j][k] = rv.pdf([i, j, k])
+def getGaussian(T, H, W, beta, d):
+    
+    diag = numpy.diag([beta[0], beta[1], beta[1]])
 
-    # fig2 = plt.figure()
-    # ax2 = fig2.add_subplot(111)
-    # print(weight, sum(sum(sum(weight))))
-    # print(weight)
-    weight = weight / cupy.max(weight)
+    rv = multivariate_normal([T-1, H-1, W-1], diag)
+    
+    tensor = torch.tensor((), dtype=torch.float32)
+    
+    NT = 2*T-1
+    NH = 2*H-1
+    NW = 2*W-1
+    
+    weight = tensor.new_ones((NT, NW, NH), device=d)
 
+    # gau = trange(T*H*W, desc='Gaussian Matrix', leave=False)
+    
+    for pos in numpy.arange(0, NT*NH*NW):
+        i = math.floor(pos/(NH*NW))
+        j = math.floor((pos - i * NH * NW) / NH)
+        k = pos - i * NH * NW - j * NW
+        # print(f"i {i}, j {j}, k {k}")
+        weight[i, j, k] = rv.pdf([i, j, k])
+        
+        weight = weight / torch.max(weight)
     return weight
 
-    # print(y_a, y_a.shape)
 
-def FocusedAttention(Q, K, V):
-    V = cupy.asarray(V)
+def FocusedAttention(score, V, weight):
+    d = V.get_device()
+    st = torch.cuda.memory_allocated()
+    print(f"before focused attention, memory usage is {st}")
+    # V = cupy.asarray(V)
+    # print(f"before V clone {torch.cuda.memory_allocated()}")
+    V_ori = torch.clone(V)
+    # print(f"After V clone {torch.cuda.memory_allocated()}")
     B = V.shape[0]
     NH = V.shape[1]
     T_flatten = V.shape[2]
@@ -50,66 +65,42 @@ def FocusedAttention(Q, K, V):
     T = 4
     H = 16
     W = 16
-
-    V_reshaped = V.reshape(B, NH, T, H, W, HS)
-    Q_reshaped = Q.reshape(B, NH, T, H, W, HS)
-    K_reshaped = K.reshape(B, NH, T, H, W, HS)
-    A_reshaped = cupy.zeros((B, NH, T, H, W, HS))
-
-    for b in range(B):
-        for nh in range(NH):
-                for t in range(T):
-                    for h in range(H):
-                        for w in range(W):
-                                # q shape is (HS,)
-                                q = Q_reshaped[b][nh][t][h][w][:]
-                                
-                                # k and v shape is (T, H, W, HS)
-                                k = K_reshaped[b][nh][:][:][:][:]
-                                v = V_reshaped[b][nh][:][:][:][:]
-                                
-                                # boardcast for multiply
-                                q_reshaped = q.reshape((1, 1, 1, HS))
-                                qk = k * q_reshaped
-                                
-                                # print(f"qk shape is {qk.shape}")
-                                
-                                qk = qk.reshape(-1, HS)
-                                
-                                # print(f"qk type is {type(qk)}")
-                                
-                                # print(f"qk shape after reshape is {qk.shape}")
-                                
-                                qk = cupy.asarray(qk)
-                                
-                                # qk shape should be (T*H*W, HS)
-                                qk = cupy.sum(qk, axis=1)
-                                
-                                # print(f"qk shape is {qk.shape}")
-                                
-                                # score shape is (T*H*W)
-#                                 score = softmax(qk / math.sqrt(HS))
-                                
-                                score = cupy.exp(qk/math.sqrt(HS))/ sum(cupy.exp(qk / math.sqrt(HS)))
-                                
-                                score = score[:, cupy.newaxis]
-
-                                weight = getGaussian(T, H, W, [100, 100], t, h, w)
-                                # print(f"weight shape {weight.shape}")
-                                weight = weight[:,:,:, cupy.newaxis]
-                                v = v * weight
-                                
-                                # print(f"v shape is {v.shape}")
-                                
-                                # v shape is (T*H*W, HS)
-                                v = v.reshape(-1, HS)
-                                v = v * score
-                                a = cupy.sum(v, axis=0)
-                                A_reshaped[b][nh][t][h][w][:] = a
-    A = A_reshaped.reshape(B,NH,T_flatten,HS)
-    A = from_dlpack(A.toDlpack())
+    beta = [100, 100]
     
-    return A
+    att = []
+    
+    center_T = T-1
+    center_H = H-1
+    center_W = W-1
+    
+    for pos in numpy.arange(0, T_flatten):
+        
+        i = math.floor(pos/(H*W))
+        j = math.floor((pos - i * H * W) / H)
+        k = pos - i * H * W - j * W
+        
+        weight_xyz = weight[center_T-i:2*center_T-i + 1, center_W-j:2*center_W-j + 1, center_H-k:2*center_H-k + 1].reshape(-1)
+
+        weight_xyz = weight_xyz[None, None, :, None]
+        
+        V = V*weight_xyz
+        
+        del weight_xyz
+        
+        # qk shape (B, NH, 1, T)
+        qk = score[:, :, pos, :]
+        qk = qk[:, :, None, :]
+
+        att_pos = qk @ V
+        att.append(att_pos)
+        
+        V = torch.clone(V_ori)
+        
+    result = torch.cat(att, dim=2)
+    end = torch.cuda.memory_allocated()
+    print(f"After focused attention, memory usage is {end}, memory used {end - st}")
+    
+    return result
 
 
 def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf"), min_tokens_to_keep=1):
@@ -166,21 +157,85 @@ class GPT1Config(GPTConfig):
     n_head = 12
     n_embd = 768
 
+# class CausalSelfAttention(nn.Module):
+#     """
+#     A vanilla multi-head masked self-attention layer with a projection at the end.
+#     It is possible to use torch.nn.MultiheadAttention here but I am including an
+#     explicit implementation here to show that there is nothing too scary here.
+#     """
 
+#     def __init__(self, config):
+#         super().__init__()
+#         assert config.n_embd % config.n_head == 0
+#         # key, query, value projections for all heads
+#         self.key = nn.Linear(config.n_embd, config.n_embd)
+#         self.query = nn.Linear(config.n_embd, config.n_embd)
+#         self.value = nn.Linear(config.n_embd, config.n_embd)
+#         # regularization
+#         self.attn_drop = nn.Dropout(config.attn_pdrop)
+#         self.resid_drop = nn.Dropout(config.resid_pdrop)
+#         # output projection
+#         self.proj = nn.Linear(config.n_embd, config.n_embd)
+#         # causal mask to ensure that attention is only applied to the left in the input sequence
+#         mask = torch.tril(torch.ones(config.block_size,
+#                                      config.block_size))
+#         if hasattr(config, "n_unmasked") and config.n_unmasked > 0:
+#             # mask[:, :config.n_unmasked] = 1
+#             # mask[:, -config.n_unmasked:] = 1
+#             # mask[-config.n_unmasked:, config.n_unmasked:-config.n_unmasked] = 0
+#             mask[:, :config.n_unmasked+1] = 1
+#             mask[:, -config.n_unmasked+1:] = 1
+#             mask[-config.n_unmasked+1:, config.n_unmasked+1:-config.n_unmasked+1] = 0
+#         self.register_buffer("mask", mask.view(1, 1, config.block_size, config.block_size))
+#         self.n_head = config.n_head
+
+#     def forward(self, x, layer_past=None):
+#         B, T, C = x.size()
+
+#         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+#         k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+#         q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+#         v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+#         present = torch.stack((k, v))
+#         if layer_past is not None:
+#             past_key, past_value = layer_past
+#             k = torch.cat((past_key, k), dim=-2)
+#             v = torch.cat((past_value, v), dim=-2)
+
+#         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+#         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+#         if layer_past is None:
+#             att = att.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
+
+#         att = F.softmax(att, dim=-1)
+#         att = self.attn_drop(att)
+#         y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+#         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+
+#         # output projection
+#         y = self.resid_drop(self.proj(y))
+#         return y, present   # TODO: check that this does not break anything
+    
+    
 class CausalSelfAttention(nn.Module):
     """
     A vanilla multi-head masked self-attention layer with a projection at the end.
     It is possible to use torch.nn.MultiheadAttention here but I am including an
     explicit implementation here to show that there is nothing too scary here.
     """
+    
+    focus_cuda0 = getGaussian(T=4, H=16, W=16, beta=[100,100], d=torch.device('cuda', 0))
+    focus_cuda1 = torch.tensor(focus_cuda0, device=torch.device('cuda', 1))
 
     def __init__(self, config):
         super().__init__()
-        assert config.n_embd % config.n_head == 0
         # key, query, value projections for all heads
         self.key = nn.Linear(config.n_embd, config.n_embd)
         self.query = nn.Linear(config.n_embd, config.n_embd)
         self.value = nn.Linear(config.n_embd, config.n_embd)
+        self.focus = None
+        
         # regularization
         self.attn_drop = nn.Dropout(config.attn_pdrop)
         self.resid_drop = nn.Dropout(config.resid_pdrop)
@@ -207,27 +262,45 @@ class CausalSelfAttention(nn.Module):
         q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         
+        device = v.get_device()
+        
+        # self.focus = CausalSelfAttention.focus_cuda0
+        
+        if device == 0:
+            self.focus = CausalSelfAttention.focus_cuda0
+        else:
+            self.focus = CausalSelfAttention.focus_cuda1
+#         f_device = CausalSelfAttention.fsocus.get_device()
+        
+        # if device != f_device:
+#             CausalSelfAttention.focus = CausalSelfAttention.focus.to(f"cuda:{device}")
+        
+        # print(device)
 
         present = torch.stack((k, v))
 #         if layer_past is not None:
 #             past_key, past_value = layer_past
 #             k = torch.cat((past_key, k), dim=-2)
 #             v = torch.cat((past_value, v), dim=-2)
-
 #         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
-#         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-        att = FocusedAttention(q, k, v)
-        
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+
         if layer_past is None:
             att = att.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
 
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
+        att = FocusedAttention(att, v, self.focus)
+        
+        del k
+        del q
+        del v
 
         # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = att.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
-
+ 
         # output projection
+        y = y.to(torch.float32)
         y = self.resid_drop(self.proj(y))
         return y, present   # TODO: check that this does not break anything
 

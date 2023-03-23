@@ -8,8 +8,8 @@ from scipy.stats import multivariate_normal
 from scipy.special import softmax
 
 def getGaussian(T, H, W, beta, x, y, z):
-    weight = cp.ones((T, H, W))
-    d = cp.diag([beta[0], beta[1], beta[1]])
+    weight = cupy.ones((T, H, W))
+    d = numpy.diag([beta[0], beta[1], beta[1]])
     rv = multivariate_normal([x , y, z], d)
     for i in range(weight.shape[0]):
         for j in range(weight.shape[1]):
@@ -20,7 +20,7 @@ def getGaussian(T, H, W, beta, x, y, z):
     # ax2 = fig2.add_subplot(111)
     # print(weight, sum(sum(sum(weight))))
     # print(weight)
-    weight = weight / cp.max(weight)
+    weight = weight / cupy.max(weight)
 
     return weight
 
@@ -30,55 +30,73 @@ def FocusedAttention(Q, K, V):
     V = cupy.asarray(V)
     B = V.shape[0]
     NH = V.shape[1]
-    T = V.shape[2]
+    T_flatten = V.shape[2]
     HS = V.shape[3]
 
     T = 4
     H = 16
     W = 16
-    encodings_dim = 256
 
-    V_reshaped = V.reshape(B, NH, T, H, W, encodings_dim, HS)
-    Q_reshaped = Q.reshape(B, NH, T, H, W, encodings_dim, HS)
-    K_reshaped = K.reshape(B, NH, T, H, W, encodings_dim, HS)
-    A_reshaped = cupy.zeros((B, NH, T, H, W, encodings_dim, HS))
+    V_reshaped = V.reshape(B, NH, T, H, W, HS)
+    Q_reshaped = Q.reshape(B, NH, T, H, W, HS)
+    K_reshaped = K.reshape(B, NH, T, H, W, HS)
+    A_reshaped = cupy.zeros((B, NH, T, H, W, HS))
 
     for b in range(B):
         for nh in range(NH):
                 for t in range(T):
                     for h in range(H):
                         for w in range(W):
-                            for enc in range(encodings_dim):
                                 # q shape is (HS,)
-                                q = Q_reshaped[b][nh][t][h][w][enc][:]
+                                q = Q_reshaped[b][nh][t][h][w][:]
                                 
                                 # k and v shape is (T, H, W, HS)
-                                k = K_reshaped[b][nh][:][:][:][enc][:]
-                                v = V_reshaped[b][nh][:][:][:][enc][:]
+                                k = K_reshaped[b][nh][:][:][:][:]
+                                v = V_reshaped[b][nh][:][:][:][:]
                                 
                                 # boardcast for multiply
                                 q_reshaped = q.reshape((1, 1, 1, HS))
                                 qk = k * q_reshaped
+                                
+                                # print(f"qk shape is {qk.shape}")
+                                
                                 qk = qk.reshape(-1, HS)
+                                
+                                # print(f"qk type is {type(qk)}")
+                                
+                                # print(f"qk shape after reshape is {qk.shape}")
+                                
+                                qk = cupy.asarray(qk)
+                                
                                 # qk shape should be (T*H*W, HS)
                                 qk = cupy.sum(qk, axis=1)
                                 
-
+                                # print(f"qk shape is {qk.shape}")
+                                
                                 # score shape is (T*H*W)
-                                score = softmax(qk / math.sqrt(HS))
-                                score = score[:, np.newaxis]
+#                                 score = softmax(qk / math.sqrt(HS))
+                                
+                                score = cupy.exp(qk/math.sqrt(HS))/ sum(cupy.exp(qk / math.sqrt(HS)))
+                                
+                                score = score[:, cupy.newaxis]
 
                                 weight = getGaussian(T, H, W, [100, 100], t, h, w)
-                                weight = weight[:, np.newaxis]
+                                # print(f"weight shape {weight.shape}")
+                                weight = weight[:,:,:, cupy.newaxis]
                                 v = v * weight
-
+                                
+                                # print(f"v shape is {v.shape}")
+                                
                                 # v shape is (T*H*W, HS)
                                 v = v.reshape(-1, HS)
                                 v = v * score
                                 a = cupy.sum(v, axis=0)
-                                A_reshaped[b][nh][t][h][w][enc][:] = a
-    A = A_reshaped.reshape(B,NH,T,HS)
+                                A_reshaped[b][nh][t][h][w][:] = a
+    A = A_reshaped.reshape(B,NH,T_flatten,HS)
+    A = from_dlpack(A.toDlpack())
+    
     return A
+
 
 # getGaussian(4,4,4,[100,100],1,1,1)
 
