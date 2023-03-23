@@ -55,7 +55,7 @@ def FocusedAttention(score, V, weight):
     print(f"before focused attention, memory usage is {st}")
     # V = cupy.asarray(V)
     # print(f"before V clone {torch.cuda.memory_allocated()}")
-    V_ori = torch.clone(V)
+    # V_ori = torch.clone(V)
     # print(f"After V clone {torch.cuda.memory_allocated()}")
     B = V.shape[0]
     NH = V.shape[1]
@@ -75,27 +75,47 @@ def FocusedAttention(score, V, weight):
     
     for pos in numpy.arange(0, T_flatten):
         
+        print(f"start of loop {torch.cuda.memory_allocated()}")
+        
         i = math.floor(pos/(H*W))
         j = math.floor((pos - i * H * W) / H)
         k = pos - i * H * W - j * W
         
+        print(f"Before weight_xyz {torch.cuda.memory_allocated()}")
+        
         weight_xyz = weight[center_T-i:2*center_T-i + 1, center_W-j:2*center_W-j + 1, center_H-k:2*center_H-k + 1].reshape(-1)
-
+        
+        print(f"After sub indexing weight {torch.cuda.memory_allocated()}")
+        
         weight_xyz = weight_xyz[None, None, :, None]
         
-        V = V*weight_xyz
+        print(f"After add axis {torch.cuda.memory_allocated()}")
         
-        del weight_xyz
+        # V_focused = V * weight_xyz
+        
+        print(f"After multiply weight {torch.cuda.memory_allocated()}")
         
         # qk shape (B, NH, 1, T)
         qk = score[:, :, pos, :]
+        
+        print(f"After index qk{torch.cuda.memory_allocated()}")
+        
         qk = qk[:, :, None, :]
+        
+        print(f"After add axis to qk {torch.cuda.memory_allocated()}")
 
-        att_pos = qk @ V
+        att_pos = qk @ (V * weight_xyz)
+        
+        print(f"After qk @ V {torch.cuda.memory_allocated()}")
+        
         att.append(att_pos)
         
-        V = torch.clone(V_ori)
+        print(f"After att append {torch.cuda.memory_allocated()}")
         
+        # V = torch.clone(V_ori)
+    
+    print(f"Before cat {torch.cuda.memory_allocated()}")
+    
     result = torch.cat(att, dim=2)
     end = torch.cuda.memory_allocated()
     print(f"After focused attention, memory usage is {end}, memory used {end - st}")
