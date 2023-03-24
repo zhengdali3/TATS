@@ -122,7 +122,9 @@ class focusAttention(Function):
         grad_V = []
 
         for pos in np.arange(0, focusAttention.T_flatten):
-            grad_att_pos = grad_output[:, pos, :, :]
+            grad_att_pos = grad_output[:, :, pos, :]
+
+            grad_att_pos = grad_att_pos[:, :, None, :]
 
             i = math.floor(pos / (focusAttention.H * focusAttention.W))
             j = math.floor((pos - i * focusAttention.H * focusAttention.W) / focusAttention.H)
@@ -131,18 +133,25 @@ class focusAttention(Function):
             weight_xyz = focusAttention.weight[focusAttention.center_T - i:2 * focusAttention.center_T - i + 1, focusAttention.center_W - j:2 * focusAttention.center_W - j + 1,
                          focusAttention.center_H - k:2 * focusAttention.center_H - k + 1].reshape(-1)
 
-            V_focus = V * weight_xyz
-
             qk = score[:, :, pos, :]
 
-            grad_qk = grad_att_pos @ torch.linalg.inv(V_focus)
-            grad_V_focus = torch.linalg.inv(qk) @ grad_att_pos
+            qk = torch.swapaxes(qk, 2, 3)
 
-            grad_score.append(grad_qk)
-            grad_V_focus = grad_V_focus * weight_xyz
-            grad_V.append(grad_V_focus)
+            grad_V.append(torch.matmul((qk * weight_xyz), grad_att_pos)[:, :, pos, :])
 
+            grad_score.append(torch.matmul(weight_xyz, grad_att_pos) * V[:, :, :, 0])
+
+            # grad_qk = grad_att_pos @ torch.linalg.inv(V_focus)
+            # grad_V_focus = torch.linalg.inv(qk) @ grad_att_pos
+            #
+            # grad_score.append(grad_qk)
+            # grad_V_focus = grad_V_focus * weight_xyz
+            # grad_V.append(grad_V_focus)
+
+        # Shape should be B, NH, T, T
         grad_score = torch.cat(grad_score, dim=2)
+
+        # Shape should be B, NH, T, HS
         grad_V = torch.cat(grad_V, dim=2)
 
         return grad_score, grad_V
