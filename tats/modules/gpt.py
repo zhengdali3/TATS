@@ -311,10 +311,6 @@ class CausalSelfAttention(nn.Module):
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
         att = FocusedAttention(att, v, self.focus)
-        
-        del k
-        del q
-        del v
 
         # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = att.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
