@@ -3,6 +3,7 @@ import math
 import cupy
 import numpy as np
 import cupy as cp
+from datetime import datetime
 from scipy.stats import multivariate_normal
 from scipy.special import softmax
 from torch.autograd import Function
@@ -35,7 +36,7 @@ class focusAttention(Function):
     T, H, W = 4, 16, 16
     T_flatten = T * H * W
     center_T, center_H, center_W = T - 1, H - 1, W - 1
-    beta = [100, 100]
+    beta = [10000, 10000]
     
     diag = np.diag([beta[0], beta[1], beta[1]])
     rv = multivariate_normal([T - 1, H - 1, W - 1], diag)
@@ -53,128 +54,111 @@ class focusAttention(Function):
         k = pos - i * NH * NW - j * NW
         weight_cuda0[i, j, k] = rv.pdf([i, j, k])
 
-        weight_cuda0 = weight_cuda0 / torch.max(weight_cuda0)
+    weight_cuda0 = weight_cuda0 / torch.max(weight_cuda0)
     
-    weight_cuda1 = weight_cuda0.detach().to("cuda:1")
+    # print(weight_cuda0, weight_cuda0[T-1, H-1, W-1])
+    
+    # Shape T, 1, 1, T, 1
+    V_weight_cuda0 = torch.empty((T_flatten,1,1,T_flatten,1), dtype=torch.float32, device ="cuda:0")
+
+    for pos in np.arange(0, T_flatten):
+
+        i = math.floor(pos / (H * W))
+        j = math.floor((pos - i * H * W) / H)
+        k = pos - i * H * W - j * W
+
+        weight_xyz = weight_cuda0[center_T - i:2 * center_T - i + 1, center_W - j:2 * center_W - j + 1,
+                     center_H - k:2 * center_H - k + 1].reshape(-1)
+
+        V_weight_cuda0[pos, 0, 0, :, 0] = weight_xyz
+
+    V_weight_cuda1 = V_weight_cuda0.detach().to("cuda:1")
 
     @staticmethod
     def forward(ctx, score, V):
-
-        att=[]
         
-        if V.get_device() == 0:
-            weight = focusAttention.weight_cuda0
+        B, NH, T_flatten, HS = V.shape
+        d = V.get_device()
+        
+        if d == 0:
+            V_weight = focusAttention.V_weight_cuda0
         else:
-            weight = focusAttention.weight_cuda1
+            V_weight = focusAttention.V_weight_cuda1
         
-        st = torch.cuda.memory_allocated()
-
-        for pos in np.arange(0, focusAttention.T_flatten):
-
-            # print(f"start of loop {torch.cuda.memory_allocated()}")
-
-            i = math.floor(pos / (focusAttention.H * focusAttention.W))
-            j = math.floor((pos - i * focusAttention.H * focusAttention.W) / focusAttention.H)
-            k = pos - i * focusAttention.H * focusAttention.W - j * focusAttention.W
-
-            # print(f"Before weight_xyz {torch.cuda.memory_allocated()}")
-            
-            # print(f"weight {weight.shape}")
-
-            weight_xyz = weight[focusAttention.center_T - i:2 * focusAttention.center_T - i + 1, focusAttention.center_W - j:2 * focusAttention.center_W - j + 1,
-                         focusAttention.center_H - k:2 * focusAttention.center_H - k + 1].reshape(-1)
-            
-            # print(f"weightxyz {weight_xyz.shape}")
-            
-            # print(f"After sub indexing weight {torch.cuda.memory_allocated()}")
-
-            weight_xyz = weight_xyz[None, None, :, None]
-
-            # print(f"After add axis {torch.cuda.memory_allocated()}")
-
-            # V_focused = V * weight_xyz
-
-            # print(f"After multiply weight {torch.cuda.memory_allocated()}")
-
-            # qk shape (B, NH, 1, T)
-            qk = score[:, :, pos, :]
-
-            # print(f"After index qk{torch.cuda.memory_allocated()}")
-
-            qk = qk[:, :, None, :]
-
-            # print(f"After add axis to qk {torch.cuda.memory_allocated()}")
-
-            att_pos = torch.matmul(qk, (V * weight_xyz)).detach()
-
-            att.append(att_pos)
-            # V = torch.clone(V_ori)
-
-
-        # print(f"Before cat {torch.cuda.memory_allocated()}")
-
-        result = torch.cat(att, dim=2)
+        V_full = V_weight * V
         
-        # print(f"result shape {result.shape}")
+        qk = score[:, :, :, None, :]
+        
+        # qk should be T, B, NH, 1 , T 
+        qk = qk.permute(2, 0, 1, 3, 4)
 
-        end = torch.cuda.memory_allocated()
+        # result should be T, B, NH, 1, HS
+        result = torch.empty((T_flatten, B, NH, 1, HS), dtype = torch.float32, device = f"cuda:{d}")
 
-        # print(f"result memory usage is {result.element_size() * result.nelement()}, memory used {end - st}, memory for v is {V.element_size() * V.nelement()}")
-
-        # print(f"After focused attention, memory usage is {end}, memory used {end - st}")
-
-        # torch.cuda.empty_cache()
-
-        # print(f"After empty cache, memory usage is {torch.cuda.memory_allocated()}")
-
+        div = 16
+        for sub in np.arange(div):
+            base = int(focusAttention.T_flatten / div)
+            result[base*sub:base*(sub+1), :, :, :, :] = torch.matmul(qk[base*sub:base*(sub+1), :, :, :, :], V_full[base*sub:base*(sub+1), :, :, :, :])
+        
+        result = result[:, :, :, 0, :].permute(1, 2, 0, 3)
+        
         ctx.save_for_backward(score, V, result)
-
-        # print(f"After save for backwards, memory usage is {torch.cuda.memory_allocated()}")
 
         return result
 
     @staticmethod
     def backward(ctx, grad_output):
+        
+        st_loop = datetime.now()
+        
         score, V, result = ctx.saved_tensors
         
-        if V.get_device() == 0:
-            weight = focusAttention.weight_cuda0
+        B, NH, T_flatten, HS = V.shape
+
+        # V weight shape is [1, 1, T, T]
+        d = V.get_device()
+
+        if d == 0:
+            V_weight = focusAttention.V_weight_cuda0
         else:
-            weight = focusAttention.weight_cuda1
+            V_weight = focusAttention.V_weight_cuda1
 
-        grad_score = []
-        grad_V = []
+        # （1, B, NH, T, T)
+        score = score[None, :, :, :, :]
 
-        for pos in np.arange(0, focusAttention.T_flatten):
-            grad_att_pos = grad_output[:, :, pos, :]
+        # (T, B, NH, T, 1)
+        score = score.permute(3, 1, 2, 4, 0)
 
-            grad_att_pos = grad_att_pos[:, :, None, :]
+        # (1, B, NH, T, HS)
+        grad_output_V = grad_output[None, :, :, :, :]
 
-            i = math.floor(pos / (focusAttention.H * focusAttention.W))
-            j = math.floor((pos - i * focusAttention.H * focusAttention.W) / focusAttention.H)
-            k = pos - i * focusAttention.H * focusAttention.W - j * focusAttention.W
+        # (T, B, NH, 1, HS)
+        grad_output_V = grad_output_V.permute(3, 1, 2, 0, 4)
 
-            weight_xyz = weight[focusAttention.center_T - i:2 * focusAttention.center_T - i + 1, focusAttention.center_W - j:2 * focusAttention.center_W - j + 1,
-                         focusAttention.center_H - k:2 * focusAttention.center_H - k + 1].reshape(-1)
+        grad_V = torch.empty(V.shape, dtype = torch.float32, device = f"cuda:{d}")
+        grad_V_total = torch.empty((T_flatten, B, NH, T_flatten, HS), dtype = torch.float32, device = f"cuda:{d}")
+        
+        div = 16
 
-            qk = score[:, :, pos, :]
-            
-            qk = qk[:, :, None, :]
-            
-            qk = torch.swapaxes(qk, 2, 3)
-            
-            weight_xyz = weight_xyz[None, None, :, None]
-            
-            grad_V_pos = torch.matmul((qk * weight_xyz), grad_att_pos)[:, :, pos, :]
-            grad_V.append(grad_V_pos[:, :, None, :])
-            
-            grad_score_pos = (torch.matmul(weight_xyz, grad_att_pos) * V)[:, :, :, 0]
-            grad_score.append(grad_score_pos[:, :, None, :])
+        for sub in np.arange(div):
+            base = int(focusAttention.T_flatten / div)
+            grad_V_total[base*sub:base*(sub+1), :, :, :, :] = torch.matmul((V_weight * score)[base*sub:base*(sub+1), :, :, :, :], grad_output_V[base*sub:base*(sub+1), :, :, :, :])
 
-        # Shape should be B, NH, T, T
-        grad_score = torch.cat(grad_score, dim=2)
+        del grad_output_V
+        
+        for i in np.arange(focusAttention.T_flatten):
+            grad_V[:, :, i, :] = grad_V_total[i, :, :, i, :]
 
-        # Shape should be B, NH, T, HS
-        grad_V = torch.cat(grad_V, dim=2)
+        del grad_V_total
+
+        grad_score = V[:, :, :, 0][:, :, :, None] * grad_output[:, :, :, 0][:, :, :, None] * V_weight
+
+        # (T, B, NH, T)
+        grad_score = grad_score[:, :, :, :, 0]
+
+        # (B, NH, T, T)
+        grad_score = grad_score.permute(1, 2, 0, 3)
+        
+        end = datetime.now()
         
         return grad_score, grad_V
