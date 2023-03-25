@@ -12,6 +12,7 @@ import math
 import logging
 import cupy
 import numpy
+from . import focus
 from tqdm import trange
 
 import torch
@@ -22,105 +23,105 @@ from torch.utils.dlpack import from_dlpack
 from scipy.stats import multivariate_normal
 # from transformers import top_k_top_p_filtering
 
-def getGaussian(T, H, W, beta, d):
+# def getGaussian(T, H, W, beta, d):
     
-    diag = numpy.diag([beta[0], beta[1], beta[1]])
+#     diag = numpy.diag([beta[0], beta[1], beta[1]])
 
-    rv = multivariate_normal([T-1, H-1, W-1], diag)
+#     rv = multivariate_normal([T-1, H-1, W-1], diag)
     
-    tensor = torch.tensor((), dtype=torch.float32)
+#     tensor = torch.tensor((), dtype=torch.float32)
     
-    NT = 2*T-1
-    NH = 2*H-1
-    NW = 2*W-1
+#     NT = 2*T-1
+#     NH = 2*H-1
+#     NW = 2*W-1
     
-    weight = tensor.new_ones((NT, NW, NH), device=d)
+#     weight = tensor.new_ones((NT, NW, NH), device=d)
 
-    # gau = trange(T*H*W, desc='Gaussian Matrix', leave=False)
+#     # gau = trange(T*H*W, desc='Gaussian Matrix', leave=False)
     
-    for pos in numpy.arange(0, NT*NH*NW):
-        i = math.floor(pos/(NH*NW))
-        j = math.floor((pos - i * NH * NW) / NH)
-        k = pos - i * NH * NW - j * NW
-        # print(f"i {i}, j {j}, k {k}")
-        weight[i, j, k] = rv.pdf([i, j, k])
+#     for pos in numpy.arange(0, NT*NH*NW):
+#         i = math.floor(pos/(NH*NW))
+#         j = math.floor((pos - i * NH * NW) / NH)
+#         k = pos - i * NH * NW - j * NW
+#         # print(f"i {i}, j {j}, k {k}")
+#         weight[i, j, k] = rv.pdf([i, j, k])
         
-        weight = weight / torch.max(weight)
-    return weight
+#         weight = weight / torch.max(weight)
+#     return weight
 
 
-def FocusedAttention(score, V, weight):
-    d = V.get_device()
-    st = torch.cuda.memory_allocated()
-    print(f"before focused attention, memory usage is {st}")
-    # V = cupy.asarray(V)
-    # print(f"before V clone {torch.cuda.memory_allocated()}")
-    # V_ori = torch.clone(V)
-    # print(f"After V clone {torch.cuda.memory_allocated()}")
-    B = V.shape[0]
-    NH = V.shape[1]
-    T_flatten = V.shape[2]
-    HS = V.shape[3]
+# def FocusedAttention(score, V, weight):
+#     d = V.get_device()
+#     st = torch.cuda.memory_allocated()
+#     print(f"before focused attention, memory usage is {st}")
+#     # V = cupy.asarray(V)
+#     # print(f"before V clone {torch.cuda.memory_allocated()}")
+#     # V_ori = torch.clone(V)
+#     # print(f"After V clone {torch.cuda.memory_allocated()}")
+#     B = V.shape[0]
+#     NH = V.shape[1]
+#     T_flatten = V.shape[2]
+#     HS = V.shape[3]
 
-    T = 4
-    H = 16
-    W = 16
-    beta = [100, 100]
+#     T = 4
+#     H = 16
+#     W = 16
+#     beta = [100, 100]
     
-    att = []
+#     att = []
     
-    center_T = T-1
-    center_H = H-1
-    center_W = W-1
+#     center_T = T-1
+#     center_H = H-1
+#     center_W = W-1
     
-    for pos in numpy.arange(0, T_flatten):
+#     for pos in numpy.arange(0, T_flatten):
         
-        print(f"start of loop {torch.cuda.memory_allocated()}")
+#         print(f"start of loop {torch.cuda.memory_allocated()}")
         
-        i = math.floor(pos/(H*W))
-        j = math.floor((pos - i * H * W) / H)
-        k = pos - i * H * W - j * W
+#         i = math.floor(pos/(H*W))
+#         j = math.floor((pos - i * H * W) / H)
+#         k = pos - i * H * W - j * W
         
-        print(f"Before weight_xyz {torch.cuda.memory_allocated()}")
+#         print(f"Before weight_xyz {torch.cuda.memory_allocated()}")
         
-        weight_xyz = weight[center_T-i:2*center_T-i + 1, center_W-j:2*center_W-j + 1, center_H-k:2*center_H-k + 1].reshape(-1)
+#         weight_xyz = weight[center_T-i:2*center_T-i + 1, center_W-j:2*center_W-j + 1, center_H-k:2*center_H-k + 1].reshape(-1)
         
-        print(f"After sub indexing weight {torch.cuda.memory_allocated()}")
+#         print(f"After sub indexing weight {torch.cuda.memory_allocated()}")
         
-        weight_xyz = weight_xyz[None, None, :, None]
+#         weight_xyz = weight_xyz[None, None, :, None]
         
-        print(f"After add axis {torch.cuda.memory_allocated()}")
+#         print(f"After add axis {torch.cuda.memory_allocated()}")
         
-        # V_focused = V * weight_xyz
+#         # V_focused = V * weight_xyz
         
-        print(f"After multiply weight {torch.cuda.memory_allocated()}")
+#         print(f"After multiply weight {torch.cuda.memory_allocated()}")
         
-        # qk shape (B, NH, 1, T)
-        qk = score[:, :, pos, :]
+#         # qk shape (B, NH, 1, T)
+#         qk = score[:, :, pos, :]
         
-        print(f"After index qk{torch.cuda.memory_allocated()}")
+#         print(f"After index qk{torch.cuda.memory_allocated()}")
         
-        qk = qk[:, :, None, :]
+#         qk = qk[:, :, None, :]
         
-        print(f"After add axis to qk {torch.cuda.memory_allocated()}")
+#         print(f"After add axis to qk {torch.cuda.memory_allocated()}")
 
-        att_pos = qk @ (V * weight_xyz)
+#         att_pos = qk @ (V * weight_xyz)
         
-        print(f"After qk @ V {torch.cuda.memory_allocated()}")
+#         print(f"After qk @ V {torch.cuda.memory_allocated()}")
         
-        att.append(att_pos)
+#         att.append(att_pos)
         
-        print(f"After att append {torch.cuda.memory_allocated()}")
+#         print(f"After att append {torch.cuda.memory_allocated()}")
         
-        # V = torch.clone(V_ori)
+#         # V = torch.clone(V_ori)
     
-    print(f"Before cat {torch.cuda.memory_allocated()}")
+#     print(f"Before cat {torch.cuda.memory_allocated()}")
     
-    result = torch.cat(att, dim=2)
-    end = torch.cuda.memory_allocated()
-    print(f"After focused attention, memory usage is {end}, memory used {end - st}")
+#     result = torch.cat(att, dim=2)
+#     end = torch.cuda.memory_allocated()
+#     print(f"After focused attention, memory usage is {end}, memory used {end - st}")
     
-    return result
+#     return result
 
 
 def top_k_top_p_filtering(logits, top_k=0, top_p=1.0, filter_value=-float("Inf"), min_tokens_to_keep=1):
@@ -245,8 +246,8 @@ class CausalSelfAttention(nn.Module):
     explicit implementation here to show that there is nothing too scary here.
     """
     
-    focus_cuda0 = getGaussian(T=4, H=16, W=16, beta=[100,100], d=torch.device('cuda', 0))
-    focus_cuda1 = torch.tensor(focus_cuda0, device=torch.device('cuda', 1))
+#     focus_cuda0 = getGaussian(T=4, H=16, W=16, beta=[100,100], d=torch.device('cuda', 0))
+#     focus_cuda1 = torch.tensor(focus_cuda0, device=torch.device('cuda', 1))
 
     def __init__(self, config):
         super().__init__()
@@ -282,14 +283,14 @@ class CausalSelfAttention(nn.Module):
         q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         
-        device = v.get_device()
+        # device = v.get_device()
         
         # self.focus = CausalSelfAttention.focus_cuda0
         
-        if device == 0:
-            self.focus = CausalSelfAttention.focus_cuda0
-        else:
-            self.focus = CausalSelfAttention.focus_cuda1
+#         if device == 0:
+#             self.focus = CausalSelfAttention.focus_cuda0
+#         else:
+#             self.focus = CausalSelfAttention.focus_cuda1
 #         f_device = CausalSelfAttention.fsocus.get_device()
         
         # if device != f_device:
@@ -304,13 +305,16 @@ class CausalSelfAttention(nn.Module):
 #             v = torch.cat((past_value, v), dim=-2)
 #         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
-
+        
         if layer_past is None:
             att = att.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
 
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
-        att = FocusedAttention(att, v, self.focus)
+        
+        att = focus.focusAttention.apply(att, v)
+        
+        # att = FocusedAttention(att, v, self.focus)
 
         # y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = att.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side

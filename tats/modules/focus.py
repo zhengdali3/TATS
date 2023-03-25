@@ -1,5 +1,3 @@
-import gc
-
 import torch
 import math
 import cupy
@@ -11,6 +9,7 @@ from torch.autograd import Function
 
 
 def getGaussian(T, H, W, beta, d):
+
     diag = np.diag([beta[0], beta[1], beta[1]])
     rv = multivariate_normal([T - 1, H - 1, W - 1], diag)
     tensor = torch.tensor((), dtype=torch.float32)
@@ -31,23 +30,43 @@ def getGaussian(T, H, W, beta, d):
 
     return weight
 
-
-
-
 class focusAttention(Function):
 
-    T, H, W = 4, 4, 4
+    T, H, W = 4, 16, 16
     T_flatten = T * H * W
     center_T, center_H, center_W = T - 1, H - 1, W - 1
     beta = [100, 100]
-    device = torch.device("cuda:0")
-    weight = getGaussian(T, H, W, beta, device)
+    
+    diag = np.diag([beta[0], beta[1], beta[1]])
+    rv = multivariate_normal([T - 1, H - 1, W - 1], diag)
+    tensor = torch.tensor((), dtype=torch.float32)
+
+    NT = 2 * T - 1
+    NH = 2 * H - 1
+    NW = 2 * W - 1
+
+    weight_cuda0 = tensor.new_ones((NT, NW, NH), device=torch.device("cuda:0"))
+
+    for pos in np.arange(0, NT * NH * NW):
+        i = math.floor(pos / (NH * NW))
+        j = math.floor((pos - i * NH * NW) / NH)
+        k = pos - i * NH * NW - j * NW
+        weight_cuda0[i, j, k] = rv.pdf([i, j, k])
+
+        weight_cuda0 = weight_cuda0 / torch.max(weight_cuda0)
+    
+    weight_cuda1 = weight_cuda0.detach().to("cuda:1")
 
     @staticmethod
     def forward(ctx, score, V):
 
         att=[]
-
+        
+        if V.get_device() == 0:
+            weight = focusAttention.weight_cuda0
+        else:
+            weight = focusAttention.weight_cuda1
+        
         st = torch.cuda.memory_allocated()
 
         for pos in np.arange(0, focusAttention.T_flatten):
@@ -59,10 +78,14 @@ class focusAttention(Function):
             k = pos - i * focusAttention.H * focusAttention.W - j * focusAttention.W
 
             # print(f"Before weight_xyz {torch.cuda.memory_allocated()}")
+            
+            # print(f"weight {weight.shape}")
 
-            weight_xyz = focusAttention.weight[focusAttention.center_T - i:2 * focusAttention.center_T - i + 1, focusAttention.center_W - j:2 * focusAttention.center_W - j + 1,
+            weight_xyz = weight[focusAttention.center_T - i:2 * focusAttention.center_T - i + 1, focusAttention.center_W - j:2 * focusAttention.center_W - j + 1,
                          focusAttention.center_H - k:2 * focusAttention.center_H - k + 1].reshape(-1)
-
+            
+            # print(f"weightxyz {weight_xyz.shape}")
+            
             # print(f"After sub indexing weight {torch.cuda.memory_allocated()}")
 
             weight_xyz = weight_xyz[None, None, :, None]
@@ -84,19 +107,15 @@ class focusAttention(Function):
 
             att_pos = torch.matmul(qk, (V * weight_xyz)).detach()
 
-            # print(f"After qk @ V {torch.cuda.memory_allocated()}")
-
             att.append(att_pos)
-
-            # print(f"After att append {torch.cuda.memory_allocated()}")
-
-            gc.collect()
             # V = torch.clone(V_ori)
 
 
         # print(f"Before cat {torch.cuda.memory_allocated()}")
 
-        result = torch.cat(att, dim=2).detach()
+        result = torch.cat(att, dim=2)
+        
+        # print(f"result shape {result.shape}")
 
         end = torch.cuda.memory_allocated()
 
@@ -104,7 +123,7 @@ class focusAttention(Function):
 
         # print(f"After focused attention, memory usage is {end}, memory used {end - st}")
 
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
 
         # print(f"After empty cache, memory usage is {torch.cuda.memory_allocated()}")
 
@@ -116,7 +135,12 @@ class focusAttention(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        score, V, result = ctx.saved_tensor
+        score, V, result = ctx.saved_tensors
+        
+        if V.get_device() == 0:
+            weight = focusAttention.weight_cuda0
+        else:
+            weight = focusAttention.weight_cuda1
 
         grad_score = []
         grad_V = []
@@ -130,44 +154,27 @@ class focusAttention(Function):
             j = math.floor((pos - i * focusAttention.H * focusAttention.W) / focusAttention.H)
             k = pos - i * focusAttention.H * focusAttention.W - j * focusAttention.W
 
-            weight_xyz = focusAttention.weight[focusAttention.center_T - i:2 * focusAttention.center_T - i + 1, focusAttention.center_W - j:2 * focusAttention.center_W - j + 1,
+            weight_xyz = weight[focusAttention.center_T - i:2 * focusAttention.center_T - i + 1, focusAttention.center_W - j:2 * focusAttention.center_W - j + 1,
                          focusAttention.center_H - k:2 * focusAttention.center_H - k + 1].reshape(-1)
 
             qk = score[:, :, pos, :]
-
+            
+            qk = qk[:, :, None, :]
+            
             qk = torch.swapaxes(qk, 2, 3)
-
-            grad_V.append(torch.matmul((qk * weight_xyz), grad_att_pos)[:, :, pos, :])
-
-            grad_score.append(torch.matmul(weight_xyz, grad_att_pos) * V[:, :, :, 0])
-
-            # grad_qk = grad_att_pos @ torch.linalg.inv(V_focus)
-            # grad_V_focus = torch.linalg.inv(qk) @ grad_att_pos
-            #
-            # grad_score.append(grad_qk)
-            # grad_V_focus = grad_V_focus * weight_xyz
-            # grad_V.append(grad_V_focus)
+            
+            weight_xyz = weight_xyz[None, None, :, None]
+            
+            grad_V_pos = torch.matmul((qk * weight_xyz), grad_att_pos)[:, :, pos, :]
+            grad_V.append(grad_V_pos[:, :, None, :])
+            
+            grad_score_pos = (torch.matmul(weight_xyz, grad_att_pos) * V)[:, :, :, 0]
+            grad_score.append(grad_score_pos[:, :, None, :])
 
         # Shape should be B, NH, T, T
         grad_score = torch.cat(grad_score, dim=2)
 
         # Shape should be B, NH, T, HS
         grad_V = torch.cat(grad_V, dim=2)
-
+        
         return grad_score, grad_V
-
-focus = focusAttention.apply
-
-from torch.autograd import gradcheck
-
-input = (torch.randn(4, 4, 64, 64, dtype=torch.float64, requires_grad=True, device='cuda:0'), torch.randn(4, 4, 64, 4, dtype=torch.float64, requires_grad=True, device='cuda:0'))
-# print("memory usage before apply is {}".format(torch.cuda.memory_allocated()))
-# st = torch.cuda.memory_allocated()
-# focus = focusAttention.apply(input[0], input[1])
-# print("memory usage is after focus is {}".format(torch.cuda.memory_allocated() - st))
-
-test = gradcheck(focus, input, eps=1e-6, atol=1e-4)
-# print(test)
-
-
-    
