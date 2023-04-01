@@ -86,15 +86,15 @@ class focusAttention(Function):
             V_weight = focusAttention.V_weight_cuda1
         
         V_full = V_weight * V
-        
+
         qk = score[:, :, :, None, :]
         
-        # qk should be T, B, NH, 1 , T 
+        # qk should be T, B, NH, 1 , T
         qk = qk.permute(2, 0, 1, 3, 4)
 
         # result should be T, B, NH, 1, HS
         result = torch.empty((T_flatten, B, NH, 1, HS), dtype = torch.float32, device = f"cuda:{d}")
-
+        
         div = 16
         for sub in np.arange(div):
             base = int(focusAttention.T_flatten / div)
@@ -144,11 +144,8 @@ class focusAttention(Function):
             grad_V_total[base*sub:base*(sub+1), :, :, :, :] = torch.matmul((V_weight * score)[base*sub:base*(sub+1), :, :, :, :], grad_output_V[base*sub:base*(sub+1), :, :, :, :])
         del grad_output_V
         
-        # for i in np.arange(focusAttention.T_flatten):
-        #     grad_V[:, :, i, :] = grad_V_total[i, :, :, i, :]
-
-        grad_V = sum(grad_V_total, 0) / focusAttention.T_flatten
-
+        for i in np.arange(focusAttention.T_flatten):
+            grad_V[:, :, i, :] = grad_V_total[i, :, :, i, :]
         del grad_V_total
 
         grad_score = V[:, :, :, 0][:, :, :, None] * grad_output[:, :, :, 0][:, :, :, None] * V_weight

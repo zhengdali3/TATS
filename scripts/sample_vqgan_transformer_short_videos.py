@@ -1,5 +1,8 @@
 # Copyright (c) Meta Platforms, Inc. All Rights Reserved
 
+import sys
+sys.path.insert(0, '/userhome/42/msd21003/TATS')
+
 import os
 import time
 import torch

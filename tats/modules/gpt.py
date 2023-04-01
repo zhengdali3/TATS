@@ -108,6 +108,8 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
 
     def forward(self, x, layer_past=None):
+        # print(f"x size {x.shape}")
+        
         B, T, C = x.size()
 
         # calculate query, key, values for all heads in batch and move head forward to be the batch dim
@@ -128,13 +130,46 @@ class CausalSelfAttention(nn.Module):
         att = F.softmax(att, dim=-1)
         att = self.attn_drop(att)
         
-        att = focus.focusAttention.apply(att, v)
-        # y = att @ v
+        # print(f"att size {att.shape}")
+        
+        if T == 1:
+            y = att @ v
+        else:
+            att = focus.focusAttention.apply(att, v)
 
         y = att.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
  
         # output projection
-        y = y.to(torch.float32)
+        if T != 1:
+            y = y.to(torch.float32)
+        y = self.resid_drop(self.proj(y))
+        return y, present   # TODO: check that this does not break anything
+
+    def forward(self, x, layer_past=None):
+        B, T, C = x.size()
+
+        # calculate query, key, values for all heads in batch and move head forward to be the batch dim
+        k = self.key(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        q = self.query(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+        v = self.value(x).view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        present = torch.stack((k, v))
+        if layer_past is not None:
+            past_key, past_value = layer_past
+            k = torch.cat((past_key, k), dim=-2)
+            v = torch.cat((past_value, v), dim=-2)
+
+        # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
+        att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
+        if layer_past is None:
+            att = att.masked_fill(self.mask[:,:,:T,:T] == 0, float('-inf'))
+
+        att = F.softmax(att, dim=-1)
+        att = self.attn_drop(att)
+        y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
+        y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
+
+        # output projection
         y = self.resid_drop(self.proj(y))
         return y, present   # TODO: check that this does not break anything
 
@@ -155,6 +190,7 @@ class Block(nn.Module):
     def forward(self, x, layer_past=None, return_present=False):
         # TODO: check that training still works
         if return_present: assert not self.training
+        # print(f"x {x.shape}")
         # layer past: tuple of length two with B, nh, T, hs
         attn, present = self.attn(self.ln1(x), layer_past=layer_past)
 
@@ -220,6 +256,7 @@ class GPT(nn.Module):
                 vtokens_position_embeddings = torch.cat([self.vtokens_pos_emb[:, :, pos[0]:pos[1], pos[2]:pos[3], :].reshape(1, -1, self.vtokens_pos_emb.shape[-1]) for pos in cbox], 0)
             position_embeddings = position_embeddings + vtokens_position_embeddings
         x = self.drop(token_embeddings + position_embeddings)
+        print("token_embedding", token_embeddings.shape, "pos_embedding", position_embeddings.shape)
         x = self.blocks(x)
         x = self.ln_f(x)
         logits = self.head(x)
@@ -256,7 +293,8 @@ class GPT(nn.Module):
                 vtokens_position_embeddings = torch.cat([self.vtokens_pos_emb[:, :, pos[0]:pos[1], pos[2]:pos[3], :].reshape(1, -1, self.vtokens_pos_emb.shape[-1]) for pos in cbox], 0)
                 vtokens_position_embeddings = vtokens_position_embeddings[:, :token_embeddings.shape[1], :]
                 position_embeddings = position_embeddings + vtokens_position_embeddings
-
+                
+        # print("token_embedding", token_embeddings.shape, "pos_embedding", position_embeddings.shape)
         x = self.drop(token_embeddings + position_embeddings)
         presents = []  # accumulate over layers
         for i, block in enumerate(self.blocks):
